@@ -1,6 +1,14 @@
-def main():
-    print("Hello from fastapi-llm-foundations!")
+from fastapi import FastAPI
+from pydantic import BaseModel
 
 
-if __name__ == "__main__":
-    main()
+class HealthResponse(BaseModel):
+    status: str
+
+
+app = FastAPI(title="FastAPI LLM Foundations")
+
+
+@app.get("/health", response_model=HealthResponse)
+async def health() -> HealthResponse:
+    return HealthResponse(status="ok")

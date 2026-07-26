@@ -1,9 +1,12 @@
-from collections.abc import Iterator
+from collections.abc import AsyncIterator
 
+import httpx
 import pytest
-from fastapi.testclient import TestClient
+import pytest_asyncio
 
 import main
+
+pytestmark = pytest.mark.asyncio
 
 
 @pytest.fixture(autouse=True)
@@ -13,21 +16,25 @@ def openrouter_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENROUTER_MODEL", "test-model")
 
 
-@pytest.fixture
-def client() -> Iterator[TestClient]:
-    with TestClient(main.app) as test_client:
-        yield test_client
+@pytest_asyncio.fixture
+async def client() -> AsyncIterator[httpx.AsyncClient]:
+    async with main.lifespan(main.app):
+        transport = httpx.ASGITransport(app=main.app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as test_client:
+            yield test_client
 
 
-def test_health_returns_ok(client: TestClient) -> None:
-    response = client.get("/health")
+async def test_health_returns_ok(client: httpx.AsyncClient) -> None:
+    response = await client.get("/health")
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
 
 
-def test_summarize_uses_configured_summarizer(
-    client: TestClient,
+async def test_summarize_uses_configured_summarizer(
+    client: httpx.AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def fake_summarize(
@@ -45,7 +52,7 @@ def test_summarize_uses_configured_summarizer(
 
     monkeypatch.setattr(main, "summarize_text", fake_summarize)
 
-    response = client.post(
+    response = await client.post(
         "/summarize",
         json={"text": "FastAPI validates request data. Pydantic defines the contract."},
     )
@@ -57,14 +64,14 @@ def test_summarize_uses_configured_summarizer(
     }
 
 
-def test_summarize_rejects_empty_text(client: TestClient) -> None:
-    response = client.post("/summarize", json={"text": ""})
+async def test_summarize_rejects_empty_text(client: httpx.AsyncClient) -> None:
+    response = await client.post("/summarize", json={"text": ""})
 
     assert response.status_code == 422
 
 
-def test_summarize_returns_safe_error_when_provider_is_unavailable(
-    client: TestClient,
+async def test_summarize_returns_safe_error_when_provider_is_unavailable(
+    client: httpx.AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def unavailable_summarizer(
@@ -76,7 +83,7 @@ def test_summarize_returns_safe_error_when_provider_is_unavailable(
 
     monkeypatch.setattr(main, "summarize_text", unavailable_summarizer)
 
-    response = client.post("/summarize", json={"text": "A short request."})
+    response = await client.post("/summarize", json={"text": "A short request."})
 
     assert response.status_code == 503
     assert response.json() == {"detail": "Summarization is temporarily unavailable."}

@@ -61,3 +61,22 @@ def test_summarize_rejects_empty_text(client: TestClient) -> None:
     response = client.post("/summarize", json={"text": ""})
 
     assert response.status_code == 422
+
+
+def test_summarize_returns_safe_error_when_provider_is_unavailable(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def unavailable_summarizer(
+        text: str,
+        client: object,
+        model: str,
+    ) -> main.SummarizeResponse:
+        raise main.SummarizationUnavailableError
+
+    monkeypatch.setattr(main, "summarize_text", unavailable_summarizer)
+
+    response = client.post("/summarize", json={"text": "A short request."})
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Summarization is temporarily unavailable."}

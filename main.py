@@ -2,8 +2,8 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import cast
 
-from fastapi import FastAPI, Request
-from openai import AsyncOpenAI
+from fastapi import FastAPI, HTTPException, Request
+from openai import APIError, AsyncOpenAI
 from pydantic import BaseModel, Field, SecretStr, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -19,6 +19,10 @@ class SummarizeRequest(BaseModel):
 class SummarizeResponse(BaseModel):
     summary: str
     model: str
+
+
+class SummarizationUnavailableError(Exception):
+    pass
 
 
 class Settings(BaseSettings):
@@ -68,21 +72,25 @@ async def summarize_text(
     client: AsyncOpenAI,
     model: str,
 ) -> SummarizeResponse:
-    response = await client.chat.completions.create(
-        model=model,
-        messages=[
-            {
-                "role": "system",
-                "content": "Summarize the input in one sentence. Return only the summary.",
-            },
-            {"role": "user", "content": text},
-        ],
-        temperature=0,
-        max_tokens=120,
-    )
+    try:
+        response = await client.chat.completions.create(
+            model=model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Summarize the input in one sentence. Return only the summary.",
+                },
+                {"role": "user", "content": text},
+            ],
+            temperature=0,
+            max_tokens=120,
+        )
+    except APIError as error:
+        raise SummarizationUnavailableError from error
+
     content = response.choices[0].message.content if response.choices else None
     if not content:
-        raise RuntimeError("OpenRouter returned an empty summary")
+        raise SummarizationUnavailableError
 
     return SummarizeResponse(summary=content.strip(), model=response.model)
 
@@ -92,4 +100,10 @@ async def summarize(payload: SummarizeRequest, request: Request) -> SummarizeRes
     # app.state is dynamic; these values were created and validated during lifespan startup.
     client = cast(AsyncOpenAI, request.app.state.openrouter_client)
     model = cast(str, request.app.state.openrouter_model)
-    return await summarize_text(payload.text, client, model)
+    try:
+        return await summarize_text(payload.text, client, model)
+    except SummarizationUnavailableError as error:
+        raise HTTPException(
+            status_code=503,
+            detail="Summarization is temporarily unavailable.",
+        ) from error
